@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+deepface
+tf-keras
+opencv-python-headless
+numpy
+Pillow
+mediapipe
+scikit-image
+python-multipart
