@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Face Liveness Detection</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0f;
+      color: #fff;
+      font-family: 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #7df;
+      margin-bottom: 24px;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      width: 100%;
+      max-width: 520px;
+    }
+
+    .cam-wrap {
+      position: relative;
+      width: 100%;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 2px solid #222;
+      background: #111;
+    }
+
+    video, canvas {
+      width: 100%;
+      display: block;
+      border-radius: 14px;
+    }
+
+    canvas {
+      position: absolute;
+      top: 0; left: 0;
+    }
+
+    .result-box {
+      width: 100%;
+      border-radius: 12px;
+      padding: 18px 24px;
+      font-size: 1.4rem;
+      font-weight: bold;
+      text-align: center;
+      letter-spacing: 1px;
+      transition: all 0.3s ease;
+      background: #111;
+      border: 2px solid #333;
+    }
+
+    .result-box.real  { background: #0a2a0a; border-color: #0f0; color: #0f0; }
+    .result-box.fake  { background: #2a0a0a; border-color: #f33; color: #f44; }
+    .result-box.wait  { background: #111;    border-color: #444; color: #888; }
+
+    .details {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .detail-card {
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 0.82rem;
+    }
+
+    .detail-card .label { color: #777; margin-bottom: 4px; font-size: 0.72rem; text-transform: uppercase; }
+    .detail-card .value { color: #eee; font-size: 1rem; font-weight: 600; }
+
+    .status-dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      margin-right: 8px;
+      background: #555;
+    }
+    .status-dot.active { background: #0f0; box-shadow: 0 0 8px #0f0; animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .api-input {
+      width: 100%;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: #fff;
+      font-size: 0.85rem;
+      outline: none;
+    }
+
+    .api-input:focus { border-color: #7df; }
+
+    small { color: #555; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+
+<h1>🔍 Liveness Detection</h1>
+
+<div class="container">
+
+  <!-- API URL input -->
+  <input
+    class="api-input"
+    id="apiUrl"
+    type="text"
+    placeholder="Backend URL — e.g. https://your-app.railway.app"
+  />
+  <small>Railway backend URL এখানে দিন</small>
+
+  <!-- Camera -->
+  <div class="cam-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <!-- Result -->
+  <div class="result-box wait" id="resultBox">
+    <span class="status-dot" id="dot"></span>
+    Waiting for camera...
+  </div>
+
+  <!-- Details -->
+  <div class="details">
+    <div class="detail-card">
+      <div class="label">Spoof Score</div>
+      <div class="value" id="dScore">—</div>
+    </div>
+    <div class="detail-card">
+      <div class="label">Threshold</div>
+      <div class="value" id="dThresh">—</div>
+    </div>
+    <div class="detail-card">
+      <div class="label">Beard</div>
+      <div class="value" id="dBeard">—</div>
+    </div>
+    <div class="detail-card">
+      <div class="label">Texture</div>
+      <div class="value" id="dTex">—</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Hidden canvas for capture -->
+<canvas id="captureCanvas" style="display:none"></canvas>
+
+<script>
+  const video   = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const ctx     = overlay.getContext('2d');
+  const capCv   = document.getElementById('captureCanvas');
+  const capCtx  = capCv.getContext('2d');
+
+  const resultBox = document.getElementById('resultBox');
+  const dot       = document.getElementById('dot');
+
+  let checking = false;
+  let lastData  = null;
+
+  // ── Start Camera ──────────────────────────────────────
+  navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false })
+    .then(stream => {
+      video.srcObject = stream;
+      video.onloadedmetadata = () => {
+        overlay.width  = video.videoWidth;
+        overlay.height = video.videoHeight;
+        capCv.width    = video.videoWidth;
+        capCv.height   = video.videoHeight;
+        dot.classList.add('active');
+        resultBox.className = 'result-box wait';
+        resultBox.innerHTML = '<span class="status-dot active"></span> Camera ready — checking...';
+        startLoop();
+      };
+    })
+    .catch(err => {
+      resultBox.className = 'result-box fake';
+      resultBox.textContent = '❌ Camera access denied';
+    });
+
+  // ── Draw overlay box ──────────────────────────────────
+  function drawBox(data) {
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (!data || data.label === 'NO_FACE') return;
+
+    // We don't get bbox from API, just show full frame tint
+    const color = data.is_real ? '#00ff00' : '#ff3333';
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 3;
+    ctx.shadowColor = color;
+    ctx.shadowBlur  = 12;
+
+    // Corner marks
+    const m = 30, x = 80, y = 60, w = overlay.width - 160, h = overlay.height - 120;
+    [
+      [x, y, x+m, y, x, y, x, y+m],
+      [x+w, y, x+w-m, y, x+w, y, x+w, y+m],
+      [x, y+h, x+m, y+h, x, y+h, x, y+h-m],
+      [x+w, y+h, x+w-m, y+h, x+w, y+h, x+w, y+h-m],
+    ].forEach(([x1,y1,x2,y2,x3,y3,x4,y4]) => {
+      ctx.beginPath();
+      ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+      ctx.moveTo(x3,y3); ctx.lineTo(x4,y4);
+      ctx.stroke();
+    });
+  }
+
+  // ── Send frame to API ─────────────────────────────────
+  async function checkFrame() {
+    const apiUrl = document.getElementById('apiUrl').value.trim();
+    if (!apiUrl) return;
+
+    capCtx.drawImage(video, 0, 0);
+    const blob = await new Promise(res => capCv.toBlob(res, 'image/jpeg', 0.85));
+
+    const form = new FormData();
+    form.append('file', blob, 'frame.jpg');
+
+    try {
+      const resp = await fetch(`${apiUrl}/check`, { method: 'POST', body: form });
+      const data = await resp.json();
+      lastData = data;
+      updateUI(data);
+      drawBox(data);
+    } catch (e) {
+      resultBox.className = 'result-box fake';
+      resultBox.innerHTML = '⚠️ API unreachable — check URL';
+    }
+  }
+
+  function updateUI(data) {
+    if (data.label === 'NO_FACE') {
+      resultBox.className = 'result-box wait';
+      resultBox.innerHTML = '<span class="status-dot active"></span> No face detected';
+      return;
+    }
+
+    if (data.is_real) {
+      resultBox.className = 'result-box real';
+      resultBox.innerHTML = `<span class="status-dot active"></span> ✅ REAL — Live Person`;
+    } else {
+      resultBox.className = 'result-box fake';
+      resultBox.innerHTML = `<span class="status-dot active"></span> 🚫 FAKE — Spoof Detected`;
+    }
+
+    document.getElementById('dScore').textContent  = data.score ?? '—';
+    document.getElementById('dThresh').textContent = data.threshold ?? '—';
+    document.getElementById('dBeard').textContent  = data.beard ? `YES (${data.beard_score})` : 'NO';
+    document.getElementById('dTex').textContent    = data.texture ?? '—';
+  }
+
+  // ── Loop — check every 2.5s ───────────────────────────
+  function startLoop() {
+    setInterval(async () => {
+      if (checking) return;
+      checking = true;
+      await checkFrame();
+      checking = false;
+    }, 2500);
+  }
+</script>
+</body>
+</html>
